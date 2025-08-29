@@ -1,0 +1,12 @@
+﻿pandas
+requests
+beautifulsoup4
+google-api-python-client
+gspread
+gspread_dataframe
+google-cloud-storage
+openpyxl
+tqdm
+papermill
+gcsfs
+jupyterlab

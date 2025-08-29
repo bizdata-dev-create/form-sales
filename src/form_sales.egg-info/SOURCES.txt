@@ -1,0 +1,10 @@
+README.md
+pyproject.toml
+src/form_sales.egg-info/PKG-INFO
+src/form_sales.egg-info/SOURCES.txt
+src/form_sales.egg-info/dependency_links.txt
+src/form_sales.egg-info/top_level.txt
+src/form_url_fetching_and_messege_writing/_01_helpers.py
+src/form_url_fetching_and_messege_writing/_98_messege-test.py
+src/form_url_fetching_and_messege_writing/_99_execution.py
+src/form_url_fetching_and_messege_writing/__init__.py

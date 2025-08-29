@@ -1,0 +1,3 @@
+﻿regex:sk-[A-Za-z0-9]+==>REDACTED
+regex:OPENAI_API_KEY\s*=\s*"[^"]*"==>OPENAI_API_KEY="REDACTED"
+regex:os\\.environ\["OPENAI_API_KEY"\]\s*=\s*"[^"]*"==>os.environ["OPENAI_API_KEY"]="REDACTED"
