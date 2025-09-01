@@ -12,3 +12,4 @@ papermill
 gcsfs
 jupyterlab
 python-dotenv==1.0.1
+openai>=1.55.0
