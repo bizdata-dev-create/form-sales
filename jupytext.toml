@@ -1,3 +1,1 @@
-[formats]
-"notebooks/form_url_fetching_and_messege_writing/" = "ipynb"       # ノート側のルート
-"src/form_url_fetch_msg_write_py/" = "py:percent"  # スクリプト側のルート
+formats = "notebooks/form_url_fetching_and_messege_writing///ipynb,src/form_url_fetch_msg_write_py///py:percent"

@@ -13,33 +13,7 @@
 # ---
 
 # %% [markdown] id="8RnUTOYIaFBb"
-# # 問い合わせURL取得
-
-# %% [markdown] id="X6ZutDC4VoIp"
-# ## 関数群
-
-# %% [markdown]
-# ### ログレベルの調整
-
-# %%
-##xxx実験----------------------------------------------
-
-# %%
-import logging
-import warnings
-
-# ログレベルをWARNING以上に設定（DEBUGとINFOを非表示）
-logging.getLogger().setLevel(logging.WARNING)
-
-# 特定のライブラリのログを無効化
-logging.getLogger('httpcore').setLevel(logging.WARNING)
-logging.getLogger('httpx').setLevel(logging.WARNING)
-logging.getLogger('openai').setLevel(logging.WARNING)
-
-# 警告も非表示にする場合
-warnings.filterwarnings('ignore')
-
-print("ログ設定完了")
+# # 事前設定
 
 # %% colab={"base_uri": "https://localhost:8080/"} id="ptwJFOn7p4DD" outputId="47bde079-b9f8-48eb-c130-0a0339c0aa49"
 # ─── 必要なライブラリのインストール ─────────────────────────
@@ -51,6 +25,7 @@ print("ログ設定完了")
 import os
 from pathlib import Path
 from dotenv import load_dotenv, find_dotenv
+from google.cloud import bigquery
 # プロジェクト直下の .env を特定して上書き読み込み
 project_root = next(p for p in [Path.cwd(), *Path.cwd().parents] if (p / ".env").exists())
 env_file = str(project_root / ".env")
@@ -60,13 +35,16 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 CSE_ID = os.getenv("CSE_ID", "")
-# cse = make_search_client(GOOGLE_API_KEY, CSE_ID)
-
+GCLOUD_PROJECT_ID = os.getenv("GClOUD_PROJECT_ID", "")
+print("GCLOUD_PROJECT_ID:",GCLOUD_PROJECT_ID)
 import os
 
 # %%
 import sys
 print(sys.executable)
+
+# %% [markdown]
+# # 問い合わせURL取得
 
 # %% [markdown]
 # ## 問い合わせ取得
@@ -247,12 +225,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 CSE_ID = os.getenv("CSE_ID", "")
 cse = make_search_client(GOOGLE_API_KEY, CSE_ID)
 print("google_api_key:",GOOGLE_API_KEY)
-print(GOOGLE_API_KEY)
-names = ["ソニー","Apple"]
 cse = make_search_client(GOOGLE_API_KEY, CSE_ID)
-for name in names:
-    hp = get_hp_url(name, cse, CSE_ID)
-    print("HP:",hp)
 
 # %% [markdown] id="hAK_42aaWSrB"
 # ## ワークシート上不明のものを保存
@@ -662,12 +635,6 @@ address_text: {address_text}
 # 営業テンプレート
         {
             prompt_template
-        #  .format(
-        #     business_type=bt_final,
-        #     company_name=company_name,
-        #     strengths=strengths or "（強み情報は未取得）",
-        #     values=values or "（理念情報は未取得）",
-        #     address_text=address_text)
         }
     """.strip()
 
@@ -726,19 +693,113 @@ for url in urls:
 # %% [markdown] id="bzGD3GSP6DJM"
 # # 実行モジュール
 
-# %% id="LN7rLf5OHTCO"
-# 事前: !pip -q install tqdm openai
-import json, re, time
-from typing import Iterable, Optional
+# %% [markdown]
+# ## dfの格納
+
+# %%
+from pathlib import Path
+import os, re
 import pandas as pd
+
+# Detect form-sales root on both VM and local
+
+def get_form_sales_root() -> Path:
+    env = os.getenv("FORM_SALES_ROOT")
+    if env:
+        p = Path(env)
+        if p.exists():
+            return p
+    # Prefer module location to avoid CWD-induced duplicates like 'form-sales/form-sales'
+    try:
+        this_file = Path(__file__).resolve()
+        # .../form-sales/src/form_url_fetch_msg_write_py/_01_helpers.py → root = parents[2]
+        module_root = this_file.parents[2]
+        if (module_root / "src").exists():
+            return module_root
+    except Exception:
+        pass
+    # Fallback: Walk up to find a directory that looks like the project root
+    cwd = Path.cwd()
+    for p in [cwd, *cwd.parents]:
+        # 1) If this dir itself is named 'form-sales' and has 'src', use it
+        if p.name == "form-sales" and (p / "src").exists():
+            return p
+        # 2) If a child named 'form-sales' exists and has 'src', use it
+        child = p / "form-sales"
+        if child.exists() and child.is_dir() and (child / "src").exists():
+            return child
+    return cwd
+
+def resolve_incoming_dir() -> Path:
+    """Resolve incoming directory each call to avoid stale env values and ensure it exists."""
+    env_dir = os.getenv("INCOMING_DIR")
+    base = Path(env_dir) if env_dir else (get_form_sales_root() / "data" / "targets" / "incoming")
+    # Normalize and ensure existence
+    base = base.resolve()
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        # If creation fails (e.g., permission), continue; caller will error clearly
+        pass
+    return base
+
+CLIENT_FILE_REGEX = re.compile(r"^(?P<client_id>[A-Za-z0-9_-]+)_\d{8}\.csv$", re.IGNORECASE)
+
+def find_latest_incoming_csv(directory: Path) -> tuple[str, Path]:
+    """
+    Find the latest CSV matching pattern '<clientid>_YYYYMMDD.csv' in the given directory.
+    Returns (client_id, file_path).
+    """
+    if not directory.exists():
+        raise FileNotFoundError(f"Incoming directory not found: {directory}")
+    candidates: list[tuple[str, Path]] = []
+    for p in directory.glob("*.csv"):
+        m = CLIENT_FILE_REGEX.match(p.name)
+        if m:
+            candidates.append((m.group("client_id"), p))
+    if not candidates:
+        raise FileNotFoundError(f"No CSV like '<clientid>_YYYYMMDD.csv' in: {directory}")
+    # latest by modified time
+    candidates.sort(key=lambda t: t[1].stat().st_mtime, reverse=True)
+    return candidates[0]
+
+def load_incoming_df() -> tuple[str, pd.DataFrame, Path]:
+    """
+    Resolve the incoming CSV path in a VM-friendly way and return (client_id, df, path).
+    Priority:
+      1) ENV INCOMING_DIR if provided
+      2) auto-detected 'form-sales/data/targets/incoming'
+    """
+    incoming_dir = resolve_incoming_dir()
+    client_id, p = find_latest_incoming_csv(incoming_dir)
+    # read with UTF-8 BOM tolerant
+    if not p.exists():
+        raise FileNotFoundError(f"Input file not found: {p}")
+    ext = p.suffix.lower()
+    df = pd.read_excel(p) if ext in {".xlsx", ".xls"} else pd.read_csv(p, encoding="utf-8-sig")
+    return client_id, df, p
+
+
+# %% [markdown]
+# ## 営業文章生成
+
+# %%
+from datetime import datetime
+import os
+import json
+import time
+from typing import Optional, Iterable
+import pandas as pd
+from tqdm import tqdm
 from openai import OpenAI
-from tqdm.auto import tqdm
+# 事前: !pip -q install tqdm openai
 
 def _extract_json(text: str) -> str:
     s = text.strip()
     s = re.sub(r"^```(?:json)?\s*|\s*```$", "", s, flags=re.S).strip()
     m = re.search(r"\{[\s\S]*\}$", s)
     return (m.group(0) if m else s)
+
 
 def fill_sales_copy_with_gpt(
     df: pd.DataFrame,
@@ -755,13 +816,23 @@ def fill_sales_copy_with_gpt(
 ) -> pd.DataFrame:
     """
     各行: hp_url -> (分類JSON) -> generate_sales_copy_with_infomation -> sales_copy に格納
-    進捗バーは1本だけ表示。
+    進捗バーは1本だけ表示。営業文生成時に "record_created_at" を "YYYY-MM-DD HH:MM:SS" で記録。
     """
+    # 出力列とタイムスタンプ列の用意
     if out_col not in df.columns:
         df.loc[:, out_col] = ""
+    record_col = "record_created_at"
+    if record_col not in df.columns:
+        df.loc[:, record_col] = pd.NaT
 
-    if classify_prompt_template is None or sales_prompt_template is None or business_vocab is None:
-        raise ValueError("classify_prompt_template / sales_prompt_template / business_vocab を指定してください。")
+    if (
+        classify_prompt_template is None
+        or sales_prompt_template is None
+        or business_vocab is None
+    ):
+        raise ValueError(
+            "classify_prompt_template / sales_prompt_template / business_vocab を指定してください。"
+        )
 
     client = OpenAI(api_key=openai_api_key or os.getenv("OPENAI_API_KEY", ""))
     mask = df[url_col].notna() & df[url_col].astype(str).str.strip().ne("")
@@ -770,6 +841,7 @@ def fill_sales_copy_with_gpt(
 
     # --- 進捗バー ---
     for i in tqdm(idxs, total=len(idxs), desc="営業文生成", unit="社"):
+        # 既存の出力があり、かつ上書きしない場合はスキップ
         if (not overwrite) and isinstance(df.at[i, out_col], str) and df.at[i, out_col].strip():
             continue
 
@@ -777,7 +849,6 @@ def fill_sales_copy_with_gpt(
         try:
             # 1) 分類（JSON生成・Web検索ON）
             prompt_cls = classify_prompt_template.format(hp_url=url, vocab_list=vocab_str)
-            # print("reach here ==============")
             resp = client.responses.create(
                 model=model,
                 input=prompt_cls,
@@ -785,7 +856,6 @@ def fill_sales_copy_with_gpt(
             )
             comp_json = _extract_json(resp.output_text)
             comp_data = json.loads(comp_json)
-            # print("reach fetching comp data ==============")
 
             # 2) 営業文生成（検索なし）
             text = generate_sales_copy_with_infomation(
@@ -794,11 +864,268 @@ def fill_sales_copy_with_gpt(
                 model=model,
                 temperature=1.0,
             )
-            # print("text",text)
-            df.at[i, out_col] = (text or "").strip()
+            text_str = (text or "").strip()
+            df.at[i, out_col] = text_str
+
+            # 生成できた場合のみ作成日時を記録（デート型: 秒精度）
+            if text_str:
+                df.at[i, record_col] = pd.Timestamp.now().floor("S")
 
         except Exception:
+            # 失敗時は出力を空にし、作成日時は更新しない
             df.at[i, out_col] = ""
         time.sleep(sleep_sec)
 
     return df
+
+# %% [markdown]
+# ## Big query書き込み
+
+# %%
+# %pip install -U google-cloud-bigquery google-cloud-bigquery-storage pandas-gbq db-dtypes pyarrow
+
+# %%
+# import google.auth
+# creds, adc_proj = google.auth.default()
+# from google.cloud import bigquery
+# client = bigquery.Client()
+# print("ADC:", adc_proj, "Client:", client.project)  # 両方が 469308 側になっていればOK
+
+# %%
+# # BigQuery: プロジェクト/テーブル設定とスキーマ確認 (①カラムを洗い出す)
+# import os
+# import pandas as pd
+
+
+# # 469308 側を既定に。必要なら書き換え可
+# GCLOUD_PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCLOUD_PROJECT") or "test-250817-469308"
+# DATASET_ID = "dev"           # ここを実環境に合わせて変更可
+# TABLE_ID = "sales_list"      # ここを実環境に合わせて変更可
+# TABLE_FQN = f"{GCLOUD_PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+
+# client = bigquery.Client(project=GCLOUD_PROJECT_ID, location="asia-northeast1")
+
+# # スキーマ取得
+# _table = client.get_table(TABLE_FQN)
+# schema_df = pd.DataFrame([
+#     {"name": f.name, "type": f.field_type, "mode": f.mode, "description": f.description}
+#     for f in _table.schema
+# ])
+# print("TABLE:", TABLE_FQN)
+# print(schema_df)
+
+
+
+# %%
+# from google.cloud import bigquery
+# import pandas as pd
+
+# # 既存の PROJECT_ID/DATASET_ID/TABLE_ID/TABLE_FQN は上のセルの値を流用
+# sent_at_value = "2020-01-01 00:00:00"  # DATETIME用（タイムゾーンなし）
+
+# data = [
+#     {
+#         "client_id": "TEST-001",
+#         "recipient_company_name": "株式会社テスト1",
+#         "hp_url": "https://example.com/1",
+#         "contact_url": "https://example.com/1/contact",
+#         "sales_copy": "ご挨拶1",
+#         "record_created_at": sent_at_value,
+#         "sent_at": sent_at_value,
+#         "send_status": "draft",
+#     },
+#     {
+#         "client_id": "TEST-002",
+#         "recipient_company_name": "株式会社テスト2",
+#         "hp_url": "https://example.com/2",
+#         "contact_url": "https://example.com/2/contact",
+#         "sales_copy": "ご挨拶2",
+#         "record_created_at": sent_at_value,
+#         "sent_at": sent_at_value,
+#         "send_status": "draft",
+#     },
+#     {
+#         "client_id": "TEST-003",
+#         "recipient_company_name": "株式会社テスト3",
+#         "hp_url": "https://example.com/3",
+#         "contact_url": "https://example.com/3/contact",
+#         "sales_copy": "ご挨拶3",
+#         "record_created_at": sent_at_value,
+#         "sent_at": sent_at_value,
+#         "send_status": "draft",
+#     },
+# ]
+
+# df = pd.DataFrame(data)
+# insert_df = df[[c for c in df.columns if c in schema_df["name"].tolist()]].copy()
+
+# # 念のため DATETIME として解釈させる（tz なし＝naive）
+# insert_df["sent_at"] = pd.to_datetime(insert_df["sent_at"]).dt.tz_localize(None)
+# insert_df["record_created_at"] = pd.to_datetime(insert_df["record_created_at"]).dt.tz_localize(None)
+
+# client = bigquery.Client(project=GCLOUD_PROJECT_ID, location="asia-northeast1")
+# job = client.load_table_from_dataframe(
+#     insert_df,
+#     TABLE_FQN,
+#     bigquery.LoadJobConfig(write_disposition="WRITE_APPEND")
+# )
+# job.result()
+# print("loaded rows:", len(insert_df))
+
+# # 検証（今入れた client_id だけ取得）
+# keys = insert_df["client_id"].tolist()
+# qry = f"""
+# SELECT client_id, recipient_company_name, hp_url, contact_url, sales_copy, sent_at, record_created_at, send_status
+# FROM `{TABLE_FQN}`
+# WHERE client_id IN UNNEST(@keys)
+# ORDER BY client_id
+# """
+# res = client.query(
+#     qry,
+#     job_config=bigquery.QueryJobConfig(
+#         query_parameters=[bigquery.ArrayQueryParameter("keys", "STRING", keys)]
+#     ),
+# ).result().to_dataframe()
+# print(res)
+
+# %%
+def prepare_contact_url_filled_df_for_bq(
+    df: pd.DataFrame,
+    *,
+    client_id: Optional[str] = None,
+    send_status_value: str = "未送信",
+    sent_at_value: str = "2020-01-01 00:00:00",
+) -> pd.DataFrame:
+    """
+    contact_url_filled_df（営業文生成後のDF）を BigQuery投入用に整形する。
+
+    実施内容:
+      - 列名変更: "company_name" → "recipient_company_name"
+      - 列追加:  "client_id"（指定があれば全行に設定、未指定時は空文字）
+      - 列追加:  "send_status"（全行 "未送信"）
+      - 列追加:  "sent_at"（全行 "2020-01-01 00:00:00"）
+
+    既存列がある場合も、"send_status" と "sent_at" は指定の定数で上書きする。
+    元の DataFrame は変更せず、加工後のコピーを返す。
+    """
+    out = df.copy()
+
+    # 1) 列名変更（存在する場合のみ）
+    if "company_name" in out.columns and "recipient_company_name" not in out.columns:
+        out = out.rename(columns={"company_name": "recipient_company_name"})
+
+    # 2) client_id 列の用意と設定
+    if "client_id" not in out.columns:
+        out.loc[:, "client_id"] = ""
+    if client_id is not None:
+        out.loc[:, "client_id"] = str(client_id)
+
+    # 3) send_status / sent_at を定数で付与（上書き）
+    out.loc[:, "send_status"] = send_status_value
+    out.loc[:, "sent_at"] = sent_at_value
+
+    return out
+
+
+# %% [markdown]
+# ## BQへ格納
+
+# %%
+# from __future__ import annotations
+
+from typing import Iterable, Mapping, Optional
+import pandas as pd
+from google.cloud import bigquery
+
+
+def load_sales_list_df_to_bq(
+    df: pd.DataFrame,
+    *,
+    project_id: str,
+    dataset_id: str = "dev",
+    table_id: str = "sales_list",
+    location: str = "asia-northeast1",
+    write_disposition: str = "WRITE_APPEND",
+    require_all_columns: bool = True,
+) -> int:
+    """
+    Load a DataFrame to BigQuery table `{project_id}.{dataset_id}.{table_id}` with
+    schema alignment for the following columns:
+      - client_id (STRING, REQUIRED)
+      - recipient_company_name (STRING, REQUIRED)
+      - hp_url (STRING, REQUIRED)
+      - contact_url (STRING, REQUIRED)
+      - sales_copy (STRING, REQUIRED)
+      - record_created_at (DATETIME, REQUIRED)
+      - sent_at (DATETIME, REQUIRED)
+      - send_status (STRING, REQUIRED)
+
+    Notes on authentication for VM:
+    - If this runs on a GCE/Cloud Run/Composer VM with an attached service account,
+      the BigQuery client will automatically use Application Default Credentials (ADC).
+      No human login is required if the service account has `roles/bigquery.dataEditor`
+      (or appropriate) on the target dataset/table.
+    - Locally, you can also set GOOGLE_APPLICATION_CREDENTIALS to a service account JSON.
+
+    Returns: number of rows loaded.
+    """
+    required_columns = [
+        "client_id",
+        "recipient_company_name",
+        "hp_url",
+        "contact_url",
+        "sales_copy",
+        "record_created_at",
+        "sent_at",
+        "send_status",
+    ]
+
+    # 1) 必須列の存在チェック
+    missing = [c for c in required_columns if c not in df.columns]
+    if missing and require_all_columns:
+        raise ValueError(f"Missing required columns: {missing}")
+
+    # 2) スキーマ順にそろえたコピーを作成（余分列は落とす）
+    use_cols = [c for c in required_columns if c in df.columns]
+    insert_df = df[use_cols].copy()
+
+    # 3) 型の正規化
+    string_cols = [
+        "client_id",
+        "recipient_company_name",
+        "hp_url",
+        "contact_url",
+        "sales_copy",
+        "send_status",
+    ]
+    for col in string_cols:
+        if col in insert_df:
+            insert_df[col] = insert_df[col].astype("string").fillna("")
+
+    # DATETIME（tz なし）へ変換。None/空文字/"None" は NaT になるので事前に弾くならここで対応
+    for col in ["record_created_at", "sent_at"]:
+        if col in insert_df:
+            series = (
+                insert_df[col]
+                .replace({"None": None})
+                .astype("string")
+                .where(lambda s: s.str.strip().ne(""), None)
+            )
+            insert_df[col] = pd.to_datetime(series, errors="coerce")
+            # BigQuery DATETIME は tz なし、NaT は許容しないので最終チェック
+            if insert_df[col].isna().any():
+                bad_idx = insert_df[col][insert_df[col].isna()].index.tolist()
+                raise ValueError(f"Invalid DATETIME in column '{col}' at rows: {bad_idx[:10]} ...")
+
+    table_fqn = f"{project_id}.{dataset_id}.{table_id}"
+
+    client = bigquery.Client(project=project_id, location=location)
+    job = client.load_table_from_dataframe(
+        insert_df,
+        table_fqn,
+        bigquery.LoadJobConfig(write_disposition=write_disposition),
+    )
+    job.result()
+    return len(insert_df)
+
+

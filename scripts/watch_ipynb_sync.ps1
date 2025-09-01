@@ -22,7 +22,12 @@ function Sync-File {
   if (-not $Path.ToLower().EndsWith(".ipynb")) { return }
 
   $now = Get-Date
-  $key = (Resolve-Path -LiteralPath $Path).Path
+  $abs = (Resolve-Path -LiteralPath $Path).Path
+  # Use absolute path for debounce key
+  $key = $abs
+  # Normalize to POSIX-style path relative to ProjectRoot for jupytext pairing
+  $jtxPath = $abs.Substring($Global:ProjectRoot.Length).TrimStart('\\','/')
+  $jtxPath = $jtxPath -replace '\\','/'
   if ($Global:LastSync.ContainsKey($key)) {
     $elapsed = ($now - $Global:LastSync[$key]).TotalSeconds
     if ($elapsed -lt $DebounceSeconds) {
@@ -38,8 +43,8 @@ function Sync-File {
     Push-Location $Global:ProjectRoot
     # Use python -m to avoid PATH issues for 'jupytext'
     $cmd = "python"
-    $args = @("-m", "jupytext", "--sync", $key)
-    $proc = Start-Process -FilePath $cmd -ArgumentList $args -NoNewWindow -PassThru -Wait -RedirectStandardOutput "$Global:ProjectRoot\watch_ipynb_sync.stdout.log" -RedirectStandardError "$Global:ProjectRoot\watch_ipynb_sync.stderr.log"
+    $jtxArgs = @("-m", "jupytext", "--sync", $jtxPath)
+    $proc = Start-Process -FilePath $cmd -ArgumentList $jtxArgs -NoNewWindow -PassThru -Wait -RedirectStandardOutput "$Global:ProjectRoot\watch_ipynb_sync.stdout.log" -RedirectStandardError "$Global:ProjectRoot\watch_ipynb_sync.stderr.log"
     if ($proc.ExitCode -ne 0) {
       Write-Log "Sync failed (exit $($proc.ExitCode)): $key"
     } else {
@@ -81,16 +86,13 @@ $watcher.EnableRaisingEvents = $true
 
 # Register for events
 $changedReg = Register-ObjectEvent -InputObject $watcher -EventName Changed -SourceIdentifier JtxChanged -Action {
-  param($sender, $eventArgs)
-  Sync-File -Path $eventArgs.FullPath
+  try { Sync-File -Path $Event.SourceEventArgs.FullPath } catch {}
 }
 $createdReg = Register-ObjectEvent -InputObject $watcher -EventName Created -SourceIdentifier JtxCreated -Action {
-  param($sender, $eventArgs)
-  Sync-File -Path $eventArgs.FullPath
+  try { Sync-File -Path $Event.SourceEventArgs.FullPath } catch {}
 }
 $renamedReg = Register-ObjectEvent -InputObject $watcher -EventName Renamed -SourceIdentifier JtxRenamed -Action {
-  param($sender, $eventArgs)
-  Sync-File -Path $eventArgs.FullPath
+  try { Sync-File -Path $Event.SourceEventArgs.FullPath } catch {}
 }
 
 Write-Log "Jupytext watcher is running (Ctrl+C to stop)"

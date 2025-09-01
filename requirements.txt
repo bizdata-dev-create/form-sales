@@ -5,6 +5,7 @@ google-api-python-client
 gspread
 gspread_dataframe
 google-cloud-storage
+google-cloud-bigquery
 openpyxl
 tqdm
 papermill
