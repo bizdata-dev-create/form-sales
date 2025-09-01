@@ -110,7 +110,13 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 CSE_ID = os.getenv("CSE_ID", "")
-GCLOUD_PROJECT_ID = os.getenv("GClOUD_PROJECT_ID", "")
+PROJECT_ID = (
+    os.getenv("GOOGLE_CLOUD_PROJECT")
+    or os.getenv("GCLOUD_PROJECT")
+    or os.getenv("GClOUD_PROJECT_ID")
+    or os.getenv("GCLOUD_PROJECT_ID")
+    or "test-250817-469308"
+)
 failure_storage_SPREADSHEET_ID = os.getenv("failure_storage_SPREADSHEET_ID", "")
 
 # %% [markdown]
@@ -204,14 +210,14 @@ def run_batches(start: int = 1200, duration: int = 1, cycle: int = 1) -> None:
         )
         loaded = load_sales_list_df_to_bq(
             bq_df,
-            project_id=GCLOUD_PROJECT_ID,
+            project_id=PROJECT_ID,
             dataset_id='dev',
             table_id='sales_list',
             location='asia-northeast1',
             write_disposition='WRITE_APPEND',
             require_all_columns=True,
         )
-        print(f'✅ Loaded {loaded} rows to {GCLOUD_PROJECT_ID}.dev.sales_list')
+        print(f'✅ Loaded {loaded} rows to {PROJECT_ID}.dev.sales_list')
 
 
 if __name__ == "__main__":
