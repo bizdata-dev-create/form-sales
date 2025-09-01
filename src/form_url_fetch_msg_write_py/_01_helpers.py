@@ -1123,7 +1123,7 @@ def load_sales_list_df_to_bq(
     job = client.load_table_from_dataframe(
         insert_df,
         table_fqn,
-        bigquery.LoadJobConfig(write_disposition=write_disposition),
+        job_config=bigquery.LoadJobConfig(write_disposition=write_disposition),
     )
     job.result()
     return len(insert_df)
