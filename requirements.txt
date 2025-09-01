@@ -11,3 +11,4 @@ tqdm
 papermill
 gcsfs
 jupyterlab
+python-dotenv==1.0.1
