@@ -819,6 +819,11 @@ def fill_sales_copy_with_gpt(
     各行: hp_url -> (分類JSON) -> generate_sales_copy_with_infomation -> sales_copy に格納
     進捗バーは1本だけ表示。営業文生成時に "record_created_at" を "YYYY-MM-DD HH:MM:SS" で記録。
     """
+    # 空のDataFrameの場合は早期リターン
+    if df.empty:
+        print("⚠️ DataFrameが空のため、営業文生成をスキップします")
+        return df
+    
     # 出力列とタイムスタンプ列の用意
     if out_col not in df.columns:
         df.loc[:, out_col] = ""

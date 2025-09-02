@@ -184,6 +184,11 @@ def run_batches(start: int = 1200, duration: int = 1, cycle: int = 1) -> None:
         ]
         print("有効リスト数", len(contact_url_filled_df))
 
+        # 有効なデータがない場合は営業文生成をスキップ
+        if len(contact_url_filled_df) == 0:
+            print("⚠️ 有効なデータがないため、営業文生成とBigQuery書き込みをスキップします")
+            continue
+
         print("営業文作成中")
         contact_url_filled_df = fill_sales_copy_with_gpt(
             contact_url_filled_df,
