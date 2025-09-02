@@ -819,6 +819,8 @@ def fill_sales_copy_with_gpt(
     各行: hp_url -> (分類JSON) -> generate_sales_copy_with_infomation -> sales_copy に格納
     進捗バーは1本だけ表示。営業文生成時に "record_created_at" を "YYYY-MM-DD HH:MM:SS" で記録。
     """
+    print(f"🔍 営業文生成開始: {len(df)}件のデータを処理します")
+    
     # 空のDataFrameの場合は早期リターン
     if df.empty:
         print("⚠️ DataFrameが空のため、営業文生成をスキップします")
@@ -841,28 +843,47 @@ def fill_sales_copy_with_gpt(
         )
 
     client = OpenAI(api_key=openai_api_key or os.getenv("OPENAI_API_KEY", ""))
+    api_key = openai_api_key or os.getenv("OPENAI_API_KEY", "")
+    print(f"🔑 OpenAI API クライアント初期化完了: {api_key[:10] if api_key else 'None'}...")
+    
     mask = df[url_col].notna() & df[url_col].astype(str).str.strip().ne("")
     idxs = df[mask].index
     vocab_str = ", ".join(business_vocab)
+    
+    print(f"📊 処理対象: {len(idxs)}件 (URL列: {url_col})")
+    print(f"📚 ビジネス語彙: {vocab_str[:100]}...")
 
     # --- 進捗バー ---
     for i in tqdm(idxs, total=len(idxs), desc="営業文生成", unit="社"):
+        print(f"\n🏢 処理中: 行 {i} (URL: {df.at[i, url_col][:50] if df.at[i, url_col] else 'None'}...)")
+        
         # 既存の出力があり、かつ上書きしない場合はスキップ
         if (not overwrite) and isinstance(df.at[i, out_col], str) and df.at[i, out_col].strip():
+            print(f"⏭️ 行 {i}: 既存の営業文があるためスキップ")
             continue
 
         url = str(df.at[i, url_col]).strip()
         try:
+            print(f"🔍 行 {i}: 1) 分類処理開始 (URL: {url[:50]}...)")
+            
             # 1) 分類（JSON生成・Web検索ON）
             prompt_cls = classify_prompt_template.format(hp_url=url, vocab_list=vocab_str)
+            print(f"📝 行 {i}: 分類プロンプト生成完了 (長さ: {len(prompt_cls)}文字)")
+            
             resp = client.responses.create(
                 model=model,
                 input=prompt_cls,
                 tools=[{"type": "web_search"}],
             )
+            print(f"✅ 行 {i}: OpenAI API 分類レスポンス受信完了")
+            
             comp_json = _extract_json(resp.output_text)
+            print(f"📋 行 {i}: JSON抽出完了 (長さ: {len(comp_json)}文字)")
+            
             comp_data = json.loads(comp_json)
+            print(f"🔍 行 {i}: JSON解析完了: {list(comp_data.keys())}")
 
+            print(f"✍️ 行 {i}: 2) 営業文生成開始")
             # 2) 営業文生成（検索なし）
             text = generate_sales_copy_with_infomation(
                 company_info=comp_data,
@@ -871,21 +892,33 @@ def fill_sales_copy_with_gpt(
                 temperature=1.0,
             )
             text_str = (text or "").strip()
+            print(f"📝 行 {i}: 営業文生成完了 (長さ: {len(text_str)}文字)")
+            
             df.at[i, out_col] = text_str
 
             # 生成できた場合のみ作成日時を記録（デート型: 秒精度）
             if text_str:
                 df.at[i, record_col] = pd.Timestamp.now().floor("S")
+                print(f"✅ 行 {i}: 営業文生成成功、タイムスタンプ設定")
             else:
                 # 営業文が生成できなかった場合は現在時刻を設定（BigQueryエラー回避）
                 df.at[i, record_col] = pd.Timestamp.now().floor("S")
+                print(f"⚠️ 行 {i}: 営業文が空、タイムスタンプのみ設定")
 
-        except Exception:
+        except Exception as e:
             # 失敗時は出力を空にし、作成日時は現在時刻を設定（BigQueryエラー回避）
+            print(f"❌ 行 {i}: エラー発生: {type(e).__name__}: {str(e)}")
+            import traceback
+            print(f"📋 行 {i}: 詳細エラー: {traceback.format_exc()}")
+            
             df.at[i, out_col] = ""
             df.at[i, record_col] = pd.Timestamp.now().floor("S")
+            print(f"🔄 行 {i}: エラー復旧完了、タイムスタンプ設定")
+        
         time.sleep(sleep_sec)
+        print(f"⏱️ 行 {i}: 処理完了、{sleep_sec}秒待機")
 
+    print(f"🎉 営業文生成完了: {len(df)}件のデータを処理しました")
     return df
 
 # %% [markdown]
