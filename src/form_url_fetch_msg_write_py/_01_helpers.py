@@ -876,10 +876,14 @@ def fill_sales_copy_with_gpt(
             # 生成できた場合のみ作成日時を記録（デート型: 秒精度）
             if text_str:
                 df.at[i, record_col] = pd.Timestamp.now().floor("S")
+            else:
+                # 営業文が生成できなかった場合は現在時刻を設定（BigQueryエラー回避）
+                df.at[i, record_col] = pd.Timestamp.now().floor("S")
 
         except Exception:
-            # 失敗時は出力を空にし、作成日時は更新しない
+            # 失敗時は出力を空にし、作成日時は現在時刻を設定（BigQueryエラー回避）
             df.at[i, out_col] = ""
+            df.at[i, record_col] = pd.Timestamp.now().floor("S")
         time.sleep(sleep_sec)
 
     return df
