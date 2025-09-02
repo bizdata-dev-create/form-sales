@@ -1,4 +1,4 @@
-# ---
+﻿# ---
 # jupyter:
 #   jupytext:
 #     text_representation:
@@ -45,7 +45,7 @@ cse_client = make_search_client(GOOGLE_API_KEY, CSE_ID)
 
 # %%
 #df の格納を確認
-df = pd.read_csv(r'C:\Users\qingy\Documents\自動フォーム営業事業\対象リスト\グーネットリスト.csv')
+df = pd.read_csv(r'C:\\Users\\qingy\\Projects\\form-sales\\sales-generator\対象リスト\グーネットリスト.csv')
 # df = pd.read_excel('/content/グーネットURL検証.xlsx')
 df.rename(columns={'会社名': 'company_name'}, inplace=True)
 df.head()

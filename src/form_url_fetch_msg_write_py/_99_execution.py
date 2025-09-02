@@ -1,4 +1,4 @@
-# ---
+﻿# ---
 # jupyter:
 #   jupytext:
 #     text_representation:
@@ -228,5 +228,3 @@ if __name__ == "__main__":
     # Use parse_known_args to ignore IPython/Jupyter-injected args like --f=... when run via %run
     args, _unknown = parser.parse_known_args()
     run_batches(start=args.start, duration=args.duration, cycle=args.cycle)
-
-# %%
