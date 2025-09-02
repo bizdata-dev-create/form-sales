@@ -222,9 +222,11 @@ def run_batches(start: int = 1200, duration: int = 1, cycle: int = 1) -> None:
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Run contact URL fetching and sales copy generation batches")
-    parser.add_argument("--start", type=int, default=1200)
-    parser.add_argument("--duration", type=int, default=1)
+    parser.add_argument("--start", type=int, default=1430)
+    parser.add_argument("--duration", type=int, default=3)
     parser.add_argument("--cycle", type=int, default=1)
     # Use parse_known_args to ignore IPython/Jupyter-injected args like --f=... when run via %run
     args, _unknown = parser.parse_known_args()
     run_batches(start=args.start, duration=args.duration, cycle=args.cycle)
+
+# %%

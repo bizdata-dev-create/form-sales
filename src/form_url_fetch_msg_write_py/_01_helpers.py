@@ -896,14 +896,14 @@ def fill_sales_copy_with_gpt(
             
             df.at[i, out_col] = text_str
 
-            # 生成できた場合のみ作成日時を記録（デート型: 秒精度）
+            # 生成できた場合のみ作成日時を記録（日本時間、秒精度）
             if text_str:
-                df.at[i, record_col] = pd.Timestamp.now().floor("S")
-                print(f"✅ 行 {i}: 営業文生成成功、タイムスタンプ設定")
+                df.at[i, record_col] = pd.Timestamp.now(tz='Asia/Tokyo').floor("S")
+                print(f"✅ 行 {i}: 営業文生成成功、日本時間タイムスタンプ設定")
             else:
                 # 営業文が生成できなかった場合は現在時刻を設定（BigQueryエラー回避）
-                df.at[i, record_col] = pd.Timestamp.now().floor("S")
-                print(f"⚠️ 行 {i}: 営業文が空、タイムスタンプのみ設定")
+                df.at[i, record_col] = pd.Timestamp.now(tz='Asia/Tokyo').floor("S")
+                print(f"⚠️ 行 {i}: 営業文が空、日本時間タイムスタンプのみ設定")
 
         except Exception as e:
             # 失敗時は出力を空にし、作成日時は現在時刻を設定（BigQueryエラー回避）
@@ -912,8 +912,8 @@ def fill_sales_copy_with_gpt(
             print(f"📋 行 {i}: 詳細エラー: {traceback.format_exc()}")
             
             df.at[i, out_col] = ""
-            df.at[i, record_col] = pd.Timestamp.now().floor("S")
-            print(f"🔄 行 {i}: エラー復旧完了、タイムスタンプ設定")
+            df.at[i, record_col] = pd.Timestamp.now(tz='Asia/Tokyo').floor("S")
+            print(f"🔄 行 {i}: エラー復旧完了、日本時間タイムスタンプ設定")
         
         time.sleep(sleep_sec)
         print(f"⏱️ 行 {i}: 処理完了、{sleep_sec}秒待機")
@@ -1145,7 +1145,7 @@ def load_sales_list_df_to_bq(
         if col in insert_df:
             insert_df[col] = insert_df[col].astype("string").fillna("")
 
-    # DATETIME（tz なし）へ変換。None/空文字/"None" は NaT になるので事前に弾くならここで対応
+    # DATETIME（tz なし）へ変換。タイムゾーン情報がある場合は日本時間に変換してからtzを除去
     for col in ["record_created_at", "sent_at"]:
         if col in insert_df:
             series = (
@@ -1155,6 +1155,13 @@ def load_sales_list_df_to_bq(
                 .where(lambda s: s.str.strip().ne(""), None)
             )
             insert_df[col] = pd.to_datetime(series, errors="coerce")
+            
+            # タイムゾーン情報がある場合は日本時間に変換してからtzを除去
+            if insert_df[col].dt.tz is not None:
+                print(f"🕐 タイムゾーン情報を処理中: {col}")
+                # 日本時間に変換してからタイムゾーン情報を除去
+                insert_df[col] = insert_df[col].dt.tz_convert('Asia/Tokyo').dt.tz_localize(None)
+            
             # BigQuery DATETIME は tz なし、NaT は許容しないので最終チェック
             if insert_df[col].isna().any():
                 bad_idx = insert_df[col][insert_df[col].isna()].index.tolist()
@@ -1170,171 +1177,5 @@ def load_sales_list_df_to_bq(
     )
     job.result()
     return len(insert_df)
-
-
-# %% [markdown]
-# ## 実験用: 改善版HP URL取得関数
-
-# %%
-def get_hp_url_improved(
-    company_name: str, 
-    cse_client, 
-    cse_id: str,
-    max_retries: int = 3,
-    retry_delay: float = 2.0
-) -> str:
-    """
-    改善版HP URL取得関数
-    
-    改善点:
-    1. レート制限エラー（429）の適切な処理
-    2. リトライ機能
-    3. 詳細なエラーログ
-    4. 代替検索方法の実装
-    """
-    import time
-    import logging
-    
-    logging.info(f"🔍 HP URL検索開始: {company_name}")
-    
-    for attempt in range(max_retries):
-        try:
-            logging.debug(f"試行 {attempt + 1}/{max_retries}: {company_name}")
-            
-            # Google Custom Search API実行
-            res = cse_client.list(q=company_name, cx=cse_id, num=1).execute()
-            items = res.get("items", [])
-            
-            if items:
-                hp_url = items[0]["link"]
-                logging.info(f"✅ HP URL取得成功: {hp_url}")
-                return hp_url
-            else:
-                logging.warning(f"⚠️ 検索結果なし: {company_name}")
-                return None
-                
-        except Exception as e:
-            error_type = type(e).__name__
-            error_msg = str(e)
-            
-            # レート制限エラーの特別処理
-            if "429" in error_msg or "Quota exceeded" in error_msg:
-                logging.error(f"❌ レート制限エラー (試行 {attempt + 1}/{max_retries}): {company_name}")
-                logging.error(f"   エラー詳細: {error_type}: {error_msg}")
-                
-                if attempt < max_retries - 1:
-                    logging.info(f"⏱️ {retry_delay}秒後にリトライします...")
-                    time.sleep(retry_delay)
-                    retry_delay *= 2  # 指数バックオフ
-                    continue
-                else:
-                    logging.error(f"❌ 最大リトライ回数に達しました: {company_name}")
-                    return None
-            else:
-                # その他のエラー
-                logging.error(f"❌ その他のエラー (試行 {attempt + 1}/{max_retries}): {company_name}")
-                logging.error(f"   エラー詳細: {error_type}: {error_msg}")
-                
-                if attempt < max_retries - 1:
-                    logging.info(f"⏱️ {retry_delay}秒後にリトライします...")
-                    time.sleep(retry_delay)
-                    continue
-                else:
-                    logging.error(f"❌ 最大リトライ回数に達しました: {company_name}")
-                    return None
-    
-    return None
-
-
-def get_hp_url_with_fallback(
-    company_name: str, 
-    cse_client, 
-    cse_id: str
-) -> str:
-    """
-    フォールバック機能付きHP URL取得関数
-    
-    1. まずGoogle Custom Search APIを試行
-    2. 失敗した場合、代替検索方法を試行
-    3. 最終的に会社名から推測URLを生成
-    """
-    import logging
-    
-    # 1. Google Custom Search API
-    hp_url = get_hp_url_improved(company_name, cse_client, cse_id)
-    if hp_url:
-        return hp_url
-    
-    logging.warning(f"⚠️ Google Custom Search API失敗: {company_name}")
-    
-    # 2. 代替検索方法（会社名から推測）
-    logging.info(f"🔍 代替検索方法を試行: {company_name}")
-    
-    # 会社名から一般的なドメインを推測
-    common_domains = [
-        f"https://{company_name.lower().replace(' ', '').replace('株式会社', '').replace('有限会社', '').replace('合同会社', '')}.com",
-        f"https://{company_name.lower().replace(' ', '').replace('株式会社', '').replace('有限会社', '').replace('合同会社', '')}.co.jp",
-        f"https://{company_name.lower().replace(' ', '').replace('株式会社', '').replace('有限会社', '').replace('合同会社', '')}.jp",
-    ]
-    
-    for domain in common_domains:
-        logging.info(f"🔍 推測ドメインをテスト: {domain}")
-        # ここで実際のURL存在確認を行うことも可能
-        # 簡易版として推測ドメインを返す
-        return domain
-    
-    logging.error(f"❌ すべての検索方法が失敗: {company_name}")
-    return None
-
-
-def test_hp_url_functions():
-    """
-    改善版HP URL取得関数のテスト
-    """
-    import logging
-    from googleapiclient.discovery import build
-    
-    # ログレベルをDEBUGに設定
-    logging.basicConfig(level=logging.DEBUG)
-    
-    print("🧪 改善版HP URL取得関数のテスト開始")
-    
-    # テスト用の会社名
-    test_companies = [
-        "株式会社テスト",
-        "有限会社サンプル",
-        "合同会社デモ"
-    ]
-    
-    # Google Custom Search APIクライアント作成
-    api_key = os.getenv("GOOGLE_API_KEY", "")
-    cse_id = os.getenv("CSE_ID", "")
-    
-    if not api_key or not cse_id:
-        print("❌ 環境変数が設定されていません")
-        return
-    
-    cse_client = build("customsearch", "v1", developerKey=api_key).cse()
-    
-    print(f"🔑 API Key: {api_key[:10]}...")
-    print(f"🔍 CSE ID: {cse_id}")
-    
-    for company in test_companies:
-        print(f"\n🏢 テスト会社: {company}")
-        
-        # 改善版関数をテスト
-        result = get_hp_url_improved(company, cse_client, cse_id)
-        print(f"   結果: {result}")
-        
-        # フォールバック機能付き関数をテスト
-        result_fallback = get_hp_url_with_fallback(company, cse_client, cse_id)
-        print(f"   フォールバック結果: {result_fallback}")
-    
-    print("\n✅ テスト完了")
-
-
-# テスト実行（コメントアウト）
-# if __name__ == "__main__":
-#     test_hp_url_functions()
 
 
