@@ -364,16 +364,17 @@ def export_unknown_contacts_to_gsheet_improved(df, spreadsheet_id, sheet_name):
             'https://www.googleapis.com/auth/spreadsheets'
         ]
         
-        # サービスアカウントキーファイルのパスを確認
-        service_account_key_path = r"C:\Users\qingy\Documents\自動フォーム営業事業\form-sales-log-bffd68dc6996.json"
+        # サービスアカウントキーファイルのパスを確認（VM対応）
+        project_root = get_form_sales_root()
+        service_account_key_path = project_root / "secrets" / "form-sales-log-bffd68dc6996.json"
         
-        if not os.path.exists(service_account_key_path):
+        if not service_account_key_path.exists():
             print(f"❌ サービスアカウントキーファイルが見つかりません: {service_account_key_path}")
             return export_unknown_contacts_to_csv(df)
         
         # サービスアカウントキーファイルを使用
         credentials = Credentials.from_service_account_file(
-            service_account_key_path, 
+            str(service_account_key_path), 
             scopes=scope
         )
         gc = gspread.authorize(credentials)
